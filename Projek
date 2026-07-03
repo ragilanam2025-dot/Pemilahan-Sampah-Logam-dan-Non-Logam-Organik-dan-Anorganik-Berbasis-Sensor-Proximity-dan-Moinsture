@@ -1,0 +1,184 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Servo.h> 
+ 
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+ 
+Servo servoTahap1; // Tahap 1: Pintu penahan & Pemilah Logam/Non-Logam
+Servo servoTahap2; // Tahap 2: Pemilah Basah/Kering
+ 
+// Deklarasi Pin
+const int pinMetal = 2;       
+const int pinMoisture = A0;   
+const int pinServo1 = 9;  
+const int pinServo2 = 10;   
+const int pinTombol = 3;      // Pin untuk Tombol Trigger
+ 
+// Kalibrasi Sensor
+int batasKosong = 1000; 
+int batasBasah = 300;   
+ 
+// --- KALIBRASI SUDUT SERVO TAHAP 1 ---
+const int s1_Standby = 80;   // Menahan sampah di atas sensor
+const int s1_Logam = 125;      // Bergerak membuang ke tong LOGAM
+const int s1_NonLogam = 35; // Menjatuhkan sampah ke corong TAHAP 2
+ 
+// --- KALIBRASI SUDUT SERVO TAHAP 2 ---
+const int s2_Standby = 100;   // Posisi tengah/netral
+const int s2_Kering = 55;     // Mengarahkan ke tong KERING
+const int s2_Basah = 145;    // Mengarahkan ke tong BASAH
+ 
+// Pelacakan Status
+int statusSekarang = 0;   // 0=Kosong, 1=Logam, 2=Kering, 3=Basah
+int statusSebelumnya = -1; 
+ 
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(pinMetal, INPUT);
+  pinMode(pinTombol, INPUT_PULLUP); 
+  
+  servoTahap1.attach(pinServo1);
+  servoTahap2.attach(pinServo2);
+  
+  servoTahap1.write(s1_Standby); 
+  servoTahap2.write(s2_Standby);    
+  
+  lcd.init();
+  lcd.backlight();
+  
+  lcd.setCursor(0, 0);
+  lcd.print("Sistem 2 Tahap");
+  lcd.setCursor(0, 1);
+  lcd.print("Siap Digunakan!");
+  delay(3000);
+  lcd.clear();
+}
+ 
+void loop() {
+  int nilaiMetal = digitalRead(pinMetal); 
+  int nilaiMoisture = analogRead(pinMoisture);
+  bool tombolDitekan = (digitalRead(pinTombol) == LOW); 
+ 
+  // 1. DETEKSI STATUS SENSOR SAAT INI
+  if (nilaiMetal == LOW) {
+    statusSekarang = 1; // Logam
+  } 
+  else if (nilaiMoisture < batasKosong) { 
+    if (nilaiMoisture < batasBasah) {
+      statusSekarang = 3; // Basah
+    } else {
+      statusSekarang = 2; // Kering
+    }
+  } 
+  else {
+    statusSekarang = 0; // Kosong
+  }
+ 
+  // 2. UPDATE LCD JIKA STATUS BERUBAH
+  if (statusSekarang != statusSebelumnya) {
+    lcd.clear();
+    
+    if (statusSekarang == 0) {
+      lcd.setCursor(0, 0);
+      lcd.print("Menunggu Sampah.");
+      lcd.setCursor(0, 1);
+      lcd.print("Status: Kosong  ");
+    } 
+    else if (statusSekarang == 1) {
+      lcd.setCursor(0, 0);
+      lcd.print("Deteksi: LOGAM");
+      lcd.setCursor(0, 1);
+      lcd.print("Tekan Tombol ->");
+    } 
+    else if (statusSekarang == 2) {
+      lcd.setCursor(0, 0);
+      lcd.print("Deteksi: KERING");
+      lcd.setCursor(0, 1);
+      lcd.print("Tekan Tombol ->");
+    } 
+    else if (statusSekarang == 3) {
+      lcd.setCursor(0, 0);
+      lcd.print("Deteksi: BASAH");
+      lcd.setCursor(0, 1);
+      lcd.print("Tekan Tombol ->");
+    }
+    
+    statusSebelumnya = statusSekarang; 
+  }
+ 
+  // 3. JALANKAN SERVO JIKA ADA SAMPAH & TOMBOL DITEKAN
+  if (statusSekarang != 0 && tombolDitekan) {
+    if (statusSekarang == 1) {
+      eksekusiLogam();
+    } else if (statusSekarang == 2) {
+      eksekusiNonLogam("KERING", s2_Kering, false); 
+    } else if (statusSekarang == 3) {
+      eksekusiNonLogam("BASAH", s2_Basah, false);  
+    }
+    
+    statusSebelumnya = -1; 
+  }
+  
+  delay(100); 
+}
+ 
+// --- FUNGSI EKSEKUSI LOGAM ---
+void eksekusiLogam() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Membuang: LOGAM");
+  
+  servoTahap1.write(s1_Logam);
+  
+  while (digitalRead(pinMetal) == LOW) {
+    delay(100);
+  }
+  
+  delay(1500); 
+  
+  servoTahap1.write(s1_Standby); 
+  lcd.clear();
+}
+ 
+// --- FUNGSI EKSEKUSI NON-LOGAM (BASAH/KERING) ---
+void eksekusiNonLogam(String jenis, int sudutTahap2, bool tahanPakaiSensor) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Membuang: ");
+  lcd.print(jenis);
+ 
+  // 1. SERVO 1 TERBUKA LEBIH DULU
+  servoTahap1.write(s1_NonLogam);
+  
+  // Beri waktu lebih lama (1.5 detik) agar sampah benar-benar tuntas jatuh ke tahap 2
+  delay(1500); 
+  
+  // 2. SERVO 1 KEMBALI MENUTUP SEBELUM SERVO 2 BEKERJA
+  servoTahap1.write(s1_Standby); 
+  
+  // Beri jeda setengah detik agar pintu atas selesai menutup dengan stabil
+  delay(500); 
+  
+  // 3. BARULAH SERVO 2 BEKERJA MENGARAHKAN JALUR
+  servoTahap2.write(sudutTahap2);
+ 
+  // Waktu tunggu agar sampah meluncur masuk ke tong Kering/Basah
+  if (tahanPakaiSensor == true) {
+    while (analogRead(pinMoisture) < batasKosong) {
+      delay(100);
+    }
+    delay(1500); 
+  } else {
+    // Karena kita memakai 'false' di loop, program akan mengeksekusi jeda ini
+    delay(2500); 
+  }
+ 
+  // 4. KEMBALIKAN SERVO 2 KE POSISI STANDBY
+  servoTahap2.write(s2_Standby);
+  
+  lcd.clear();
+}
+ 
+ 
+
